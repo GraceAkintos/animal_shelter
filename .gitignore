@@ -1,0 +1,5 @@
+
+# Animal shelter project
+*.db
+*.db-journal
+server/uploads/
