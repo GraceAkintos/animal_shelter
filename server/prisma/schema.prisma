@@ -1,11 +1,348 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
-  provider = "prisma-client"
+  provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "sqlite"
   url      = env("DATABASE_URL")
+}
+
+// USERS & ROLES 
+
+model Role {
+  role_id     Int     @id @default(autoincrement())
+  role_name   String  @unique // admin, staff, adopter, foster, vet, volunteer
+  description String?
+
+  users User[]
+
+  @@map("Roles")
+}
+
+model User {
+  user_id        Int       @id @default(autoincrement())
+  role_id        Int
+  full_name      String
+  email          String    @unique
+  phone          String?
+  password_hash  String
+  account_status String    @default("active") // active, inactive (FR-27)
+  reset_token    String? // FR-04 password reset
+  reset_expires  DateTime?
+  created_at     DateTime  @default(now())
+
+  role Role @relation(fields: [role_id], references: [role_id])
+
+  healthRecords        AnimalHealthRecord[]
+  vaccinationsGiven    Vaccination[]
+  adoptionApplications AdoptionApplication[] @relation("ApplicationApplicant")
+  reviewedApplications AdoptionApplication[] @relation("ApplicationReviewer")
+  adoptionsCompleted   Adoption[]
+  appointments         Appointment[]         @relation("AppointmentUser")
+  vetAppointments      Appointment[]         @relation("AppointmentVet")
+  eventsCreated        ShelterEvent[]
+  careRecords          AnimalCareRecord[]
+  notifications        Notification[]
+  activityLogs         ActivityLog[]
+  fosterApplications   FosterApplication[]
+  fosterHomes          FosterHome[]
+  volunteerProfile     VolunteerProfile?
+  staffShifts          VolunteerShift[]      @relation("ShiftStaff")
+  shiftsAssigned       VolunteerShift[]      @relation("ShiftAssigner")
+
+  @@map("Users")
+}
+
+//ANIMALS & HEALTH 
+
+model Animal {
+  animal_id       Int      @id @default(autoincrement())
+  name            String
+  species         String
+  breed           String?
+  age             Int?
+  weight          Float?
+  sex             String?
+  color           String?
+  intake_date     DateTime
+  intake_type     String // stray, surrender, transfer, ...
+  location        String? // kennel / room
+  medical_history String?
+  status          String   @default("available") // available, pending, adopted, medical_hold, in_foster
+  photo_url       String?
+  is_archived     Boolean  @default(false) // FR-29
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  healthRecords        AnimalHealthRecord[]
+  vaccinations         Vaccination[]
+  adoptionApplications AdoptionApplication[]
+  appointments         Appointment[]
+  careRecords          AnimalCareRecord[]
+  fosterApplications   FosterApplication[]
+  fosterPlacements     FosterPlacement[]
+
+  @@index([name])
+  @@index([species, status])
+  @@map("Animals")
+}
+
+model AnimalHealthRecord {
+  health_record_id   Int      @id @default(autoincrement())
+  animal_id          Int
+  recorded_by        Int
+  record_type        String // medical, behavioral
+  record_date        DateTime
+  notes              String
+  update_reason      String? // FR-11 justification for edits
+  medical_alert      Boolean  @default(false) // FR-37 flag
+  condition_severity String? // FR-37: low, moderate, high, critical
+  created_at         DateTime @default(now())
+  updated_at         DateTime @updatedAt
+
+  animal   Animal @relation(fields: [animal_id], references: [animal_id])
+  recorder User   @relation(fields: [recorded_by], references: [user_id])
+
+  @@index([animal_id])
+  @@map("AnimalHealthRecords")
+}
+
+model Vaccination {
+  vaccination_id   Int       @id @default(autoincrement())
+  animal_id        Int
+  administered_by  Int
+  vaccine_name     String
+  vaccination_date DateTime
+  next_due_date    DateTime?
+  notes            String?
+
+  animal        Animal @relation(fields: [animal_id], references: [animal_id])
+  administrator User   @relation(fields: [administered_by], references: [user_id])
+
+  @@index([next_due_date])
+  @@map("Vaccinations")
+}
+
+model AnimalCareRecord {
+  care_record_id Int      @id @default(autoincrement())
+  animal_id      Int
+  performed_by   Int
+  care_type      String // feeding, medical_procedure, grooming, other
+  performed_at   DateTime @default(now())
+  notes          String?
+
+  animal    Animal @relation(fields: [animal_id], references: [animal_id])
+  performer User   @relation(fields: [performed_by], references: [user_id])
+
+  @@map("AnimalCareRecords")
+}
+
+// ADOPTIONS
+
+model AdoptionApplication {
+  application_id     Int       @id @default(autoincrement())
+  animal_id          Int
+  applicant_id       Int
+  reviewed_by        Int?
+  address            String
+  num_adults         Int
+  num_children       Int       @default(0)
+  housing_type       String
+  landlord_approval  Boolean?
+  pet_experience     String?
+  comments           String?
+  application_status String    @default("pending") // pending, approved, rejected
+  submitted_at       DateTime  @default(now())
+  reviewed_at        DateTime?
+  status_updated_at  DateTime  @updatedAt
+
+  animal    Animal    @relation(fields: [animal_id], references: [animal_id])
+  applicant User      @relation("ApplicationApplicant", fields: [applicant_id], references: [user_id])
+  reviewer  User?     @relation("ApplicationReviewer", fields: [reviewed_by], references: [user_id])
+  adoption  Adoption?
+
+  @@index([application_status])
+  @@map("AdoptionApplications")
+}
+
+model Adoption {
+  adoption_id            Int       @id @default(autoincrement())
+  application_id         Int       @unique // one application -> at most one adoption
+  completed_by           Int
+  adoption_date          DateTime
+  adoption_fee           Float     @default(0)
+  agreement_url          String? // FR-31
+  agreement_generated_at DateTime?
+
+  application AdoptionApplication @relation(fields: [application_id], references: [application_id])
+  completer   User                @relation(fields: [completed_by], references: [user_id])
+
+  @@map("Adoptions")
+}
+
+// SCHEDULING
+
+model Appointment {
+  appointment_id   Int      @id @default(autoincrement())
+  animal_id        Int
+  user_id          Int? // adopter / involved user
+  veterinarian_id  Int?
+  appointment_type String // vet, adoption_meeting, grooming, other
+  appointment_date DateTime
+  status           String   @default("scheduled") // scheduled, completed, cancelled
+  comments         String?
+  created_at       DateTime @default(now())
+
+  animal       Animal @relation(fields: [animal_id], references: [animal_id])
+  user         User?  @relation("AppointmentUser", fields: [user_id], references: [user_id])
+  veterinarian User?  @relation("AppointmentVet", fields: [veterinarian_id], references: [user_id])
+
+  @@index([appointment_date])
+  @@map("Appointments")
+}
+
+model ShelterEvent {
+  event_id    Int      @id @default(autoincrement())
+  created_by  Int
+  event_title String
+  description String?
+  start_time  DateTime
+  end_time    DateTime
+
+  creator User @relation(fields: [created_by], references: [user_id])
+
+  @@map("ShelterEvents")
+}
+
+// INVENTORY
+
+model InventoryItem {
+  item_id          Int       @id @default(autoincrement())
+  item_name        String
+  category         String
+  quantity         Int       @default(0)
+  minimum_quantity Int       @default(0) // FR-24 low-stock threshold
+  description      String?
+  expiration_date  DateTime?
+  updated_at       DateTime  @updatedAt
+
+  @@map("InventoryItems")
+}
+
+// NOTIFICATIONS & LOGS
+
+model Notification {
+  notification_id   Int      @id @default(autoincrement())
+  recipient_id      Int
+  notification_type String // application_update, appointment_reminder, medical_alert, inventory_alert
+  message           String
+  delivery_method   String   @default("system") // system, email
+  is_read           Boolean  @default(false)
+  created_at        DateTime @default(now())
+
+  recipient User @relation(fields: [recipient_id], references: [user_id])
+
+  @@index([recipient_id, is_read])
+  @@map("Notifications")
+}
+
+model ActivityLog {
+  log_id      Int      @id @default(autoincrement())
+  user_id     Int? // null for automatic system events
+  action_type String // create, update, delete, login, ...
+  entity_type String? // Animal, AdoptionApplication, ...
+  entity_id   Int?
+  description String
+  created_at  DateTime @default(now())
+
+  user User? @relation(fields: [user_id], references: [user_id])
+
+  @@index([created_at])
+  @@map("ActivityLogs")
+}
+
+// FOSTER CARE
+
+model FosterApplication {
+  foster_application_id Int       @id @default(autoincrement())
+  applicant_id          Int
+  animal_id             Int? // preferred animal (optional)
+  housing_details       String
+  availability          String
+  application_status    String    @default("pending") // pending, under_review, approved, rejected
+  submitted_at          DateTime  @default(now())
+  reviewed_at           DateTime?
+
+  applicant User    @relation(fields: [applicant_id], references: [user_id])
+  animal    Animal? @relation(fields: [animal_id], references: [animal_id])
+
+  @@map("FosterApplications")
+}
+
+model FosterHome {
+  foster_home_id   Int      @id @default(autoincrement())
+  foster_parent_id Int
+  address          String
+  capacity         Int
+  approval_status  String   @default("pending") // pending, approved
+  created_at       DateTime @default(now())
+
+  fosterParent User              @relation(fields: [foster_parent_id], references: [user_id])
+  placements   FosterPlacement[]
+
+  @@map("FosterHomes")
+}
+
+model FosterPlacement {
+  placement_id      Int       @id @default(autoincrement())
+  animal_id         Int
+  foster_home_id    Int
+  start_date        DateTime
+  expected_end_date DateTime?
+  return_date       DateTime? // FR-38
+  return_reason     String?
+  notes             String?
+  placement_status  String    @default("active") // active, returned
+
+  animal     Animal     @relation(fields: [animal_id], references: [animal_id])
+  fosterHome FosterHome @relation(fields: [foster_home_id], references: [foster_home_id])
+
+  @@map("FosterPlacements")
+}
+
+//VOLUNTEERS
+
+model VolunteerProfile {
+  volunteer_id     Int     @id @default(autoincrement())
+  user_id          Int     @unique // one user -> at most one volunteer profile
+  skills           String?
+  interests        String?
+  availability     String?
+  volunteer_status String  @default("active")
+
+  user   User             @relation(fields: [user_id], references: [user_id])
+  shifts VolunteerShift[]
+
+  @@map("VolunteerProfiles")
+}
+
+model VolunteerShift {
+  shift_id           Int      @id @default(autoincrement())
+  volunteer_id       Int? // set for volunteer shifts
+  staff_user_id      Int? // set for staff shifts
+  assigned_by        Int
+  shift_date         DateTime
+  start_time         DateTime
+  end_time           DateTime
+  assigned_duties    String
+  shift_status       String   @default("scheduled") // scheduled, completed, cancelled
+  hours_worked       Float? // FR-36, calculated by the server
+  activity_performed String?
+
+  volunteer VolunteerProfile? @relation(fields: [volunteer_id], references: [volunteer_id])
+  staffUser User?             @relation("ShiftStaff", fields: [staff_user_id], references: [user_id])
+  assigner  User              @relation("ShiftAssigner", fields: [assigned_by], references: [user_id])
+
+  @@index([shift_date])
+  @@map("VolunteerShifts")
 }
