@@ -4,6 +4,7 @@ import { z } from 'zod';
 import prisma from '../db.js';
 import { requireLogin } from '../middleware/auth.js';
 import { logActivity } from '../services/activityLog.js';
+import crypto from 'crypto';
 
 const router = Router();
 
@@ -113,6 +114,72 @@ router.post('/logout', requireLogin, async (req, res, next) => {
 // GET /api/auth/me  (the React app calls this on page load to see if you're logged in)
 router.get('/me', requireLogin, (req, res) => {
   res.json({ user: req.session.user });
+});
+
+//FR-04: Password reset
+// The token is like a one-time password. We store only its SHA-256 hash, so even someone who reads the database can't use a stored token. It expires after 1 hour
+const hashToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
+
+// POST /api/auth/forgot-password   body: { "email": "..." }
+const forgotSchema = z.object({
+  email: z.string().trim().toLowerCase().email('Enter a valid email address'),
+});
+
+router.post('/forgot-password', async (req, res) => {
+  const result = forgotSchema.safeParse(req.body);
+  if (!result.success) {
+    return res.status(400).json({ error: result.error.issues[0].message });
+  }
+
+  // Same message whether or not the account exists, so the form can't be used to discover emails
+  const message = 'If an account exists for that email, password reset instructions have been sent.';
+
+  const user = await prisma.user.findUnique({ where: { email: result.data.email } });
+  if (!user || user.account_status !== 'active') {
+    return res.json({ message });
+  }
+
+  const token = crypto.randomBytes(32).toString('hex');
+  await prisma.user.update({
+    where: { user_id: user.user_id },
+    data: { reset_token: hashToken(token), reset_expires: new Date(Date.now() + 60 * 60 * 1000) },
+  });
+  await logActivity(user.user_id, 'password_reset_request', 'Password reset requested');
+
+  // there is no email service yet, so the link is returned directly so the feature can be tested. A real deployment would email this link instead.
+  res.json({ message, demo_reset_link: `/reset-password?token=${token}` });
+});
+
+// POST /api/auth/reset-password   body: { "token": "...", "password": "..." }
+const resetSchema = z.object({
+  token: z.string().min(1, 'Reset token is required'),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
+});
+
+router.post('/reset-password', async (req, res) => {
+  const result = resetSchema.safeParse(req.body);
+  if (!result.success) {
+    return res.status(400).json({ error: result.error.issues[0].message });
+  }
+
+  const user = await prisma.user.findFirst({
+    where: { reset_token: hashToken(result.data.token), reset_expires: { gt: new Date() } },
+  });
+  if (!user) {
+    return res.status(400).json({ error: 'This reset link is invalid or has expired' });
+  }
+
+  await prisma.user.update({
+    where: { user_id: user.user_id },
+    data: {
+      password_hash: await bcrypt.hash(result.data.password, 12),
+      reset_token: null, // the link only works once
+      reset_expires: null,
+    },
+  });
+  await logActivity(user.user_id, 'update', 'Password was reset', 'User', user.user_id);
+
+  res.json({ message: 'Your password has been updated. You can now log in.' });
 });
 
 export default router;
