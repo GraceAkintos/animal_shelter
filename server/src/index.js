@@ -3,6 +3,8 @@ import express from 'express';
 import session from 'express-session';
 import prisma from './db.js';
 import authRoutes from './routes/auth.js';
+import userRoutes from './routes/users.js';
+import logRoutes from './routes/logs.js';
 import { notFound, errorHandler } from './middleware/errors.js';
 
 const app = express();
@@ -35,6 +37,8 @@ app.get('/api/health', async (req, res) => {
 });
 
 app.use('/api/auth', authRoutes);
+app.use('/api/users', userRoutes);
+app.use('/api/logs', logRoutes);
 
 //Error handling (must come after all routes)
 app.use('/api', notFound);
